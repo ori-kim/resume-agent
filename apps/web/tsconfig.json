@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@resumagent/api-client": ["../../packages/api-client/src/index.ts"],
+      "@resumagent/shared": ["../../packages/shared/src/index.ts"],
+      "@resumagent/server": ["./src/types/resumagent-server.d.ts"]
+    }
+  },
+  "include": ["src/**/*", "vite.config.ts"]
+}

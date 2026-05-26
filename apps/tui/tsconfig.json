@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@resumagent/api-client": ["../../packages/api-client/src/index.ts"],
+      "@resumagent/shared": ["../../packages/shared/src/index.ts"],
+      "@resumagent/server": ["./src/types/resumagent-server.d.ts"]
+    }
+  },
+  "include": ["src/**/*"]
+}
