@@ -1,5 +1,10 @@
 import { Hono } from "hono";
-import { createFieldFillResponse, streamAgentResponse } from "../services/agent.ts";
+import {
+  createFieldFillResponse,
+  createSubagentCommandResponse,
+  getSubagentCommandFromMessages,
+  streamAgentResponse,
+} from "../services/agent.ts";
 import { ChatRequestSchema, SelectedScopeSchema } from "@resumagent/shared";
 import type { UIMessage } from "ai";
 import type { ProviderName, SelectedScope } from "@resumagent/shared";
@@ -63,6 +68,31 @@ chat.post("/", async (c) => {
     const r = SelectedScopeSchema.safeParse(s);
     return r.success ? [r.data] : [];
   });
+
+  let subagentCommand;
+  try {
+    subagentCommand = getSubagentCommandFromMessages(messages as UIMessage[]);
+  } catch (err) {
+    return c.text(formatStreamError(err, provider), 400);
+  }
+
+  if (subagentCommand) {
+    try {
+      const response = await createSubagentCommandResponse(
+        messages as UIMessage[],
+        {
+          provider,
+          modelId: model,
+          selectedScopes,
+        },
+        subagentCommand
+      );
+      response.headers.set("X-Accel-Buffering", "no");
+      return response;
+    } catch (err) {
+      return c.text(formatStreamError(err, provider), 503);
+    }
+  }
 
   const wantsBrowserAutomation = isBrowserAutomationRequest(messages as UIMessage[]);
   const totalFields = selectedScopes.reduce((sum, scope) => sum + scope.fields.length, 0);

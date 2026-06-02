@@ -60,6 +60,13 @@ function formatFillOutput(elementId: string, response: FillResponse): string {
   return `failed: reason=${response.reason ?? "unknown"} elementId=${elementId}`;
 }
 
+function filesToFileList(files: File[]): FileList | undefined {
+  if (files.length === 0) return undefined;
+  const dataTransfer = new DataTransfer();
+  files.forEach((file) => dataTransfer.items.add(file));
+  return dataTransfer.files;
+}
+
 function makeScopeId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -567,12 +574,12 @@ function App() {
     });
   }
 
-  function onSend(text: string, scopes: SelectedScope[]) {
+  function onSend(text: string, scopes: SelectedScope[], files: File[]) {
     if (scopes.length > 0) {
       setMessageScopesMap((prev) => ({ ...prev, [messages.length]: scopes }));
     }
     pendingScopesRef.current = scopes;  // body()가 호출될 때까지 보존
-    sendMessage({ text });
+    sendMessage({ text, files: filesToFileList(files) });
     setSelectedScopes([]);
   }
 

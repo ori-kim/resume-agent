@@ -32,6 +32,19 @@ function isToolPart(p: unknown): p is ToolUIPart {
   return typeof type === "string" && type.startsWith("tool-");
 }
 
+type FilePart = {
+  type: "file";
+  mediaType: string;
+  url: string;
+  filename?: string;
+};
+
+function isImageFilePart(p: unknown): p is FilePart {
+  if (typeof p !== "object" || p === null) return false;
+  const part = p as { type?: unknown; mediaType?: unknown; url?: unknown };
+  return part.type === "file" && typeof part.mediaType === "string" && part.mediaType.startsWith("image/") && typeof part.url === "string";
+}
+
 function scopeChipLabel(scope: SelectedScope): string {
   const base = scope.label || scope.containerTag || (scope.fields[0]?.tagName ?? "element");
   if (scope.kind === "container") return `@${scope.containerTag ?? "div"}·${base} (${scope.fields.length})`;
@@ -77,10 +90,12 @@ function MessageRow({
   const isUser = m.role === "user";
 
   if (isUser) {
-    const text = (m.parts ?? [])
+    const parts = m.parts ?? [];
+    const text = parts
       .filter((p): p is { type: "text"; text: string } => p.type === "text")
       .map((p) => p.text)
       .join("");
+    const imageParts = parts.filter(isImageFilePart);
     return (
       <div className="flex flex-col items-end mb-4">
         {scopes && scopes.length > 0 && (
@@ -95,9 +110,23 @@ function MessageRow({
             ))}
           </div>
         )}
-        <div className="bg-zinc-100 text-zinc-900 rounded-2xl px-4 py-2 max-w-[75%] text-sm leading-relaxed whitespace-pre-wrap">
-          {text}
-        </div>
+        {imageParts.length > 0 && (
+          <div className="mb-1 grid max-w-[75%] grid-cols-2 gap-1">
+            {imageParts.map((part, index) => (
+              <img
+                key={`${part.url}-${index}`}
+                src={part.url}
+                alt={part.filename ?? "첨부 이미지"}
+                className="max-h-48 rounded-xl border border-zinc-200 object-cover"
+              />
+            ))}
+          </div>
+        )}
+        {text && (
+          <div className="bg-zinc-100 text-zinc-900 rounded-2xl px-4 py-2 max-w-[75%] text-sm leading-relaxed whitespace-pre-wrap">
+            {text}
+          </div>
+        )}
       </div>
     );
   }

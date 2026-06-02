@@ -18,6 +18,13 @@ async function reindex(): Promise<void> {
   await fetch(`${BACKEND_URL}/rag/reindex`, { method: "POST" });
 }
 
+function filesToFileList(files: File[]): FileList | undefined {
+  if (files.length === 0) return undefined;
+  const dataTransfer = new DataTransfer();
+  files.forEach((file) => dataTransfer.items.add(file));
+  return dataTransfer.files;
+}
+
 export default function App() {
   const [provider, setProvider] = useState("ollama");
   const [model, setModel] = useState("");
@@ -36,8 +43,8 @@ export default function App() {
 
   const { messages, sendMessage, status, error, setMessages } = useChat({ transport });
 
-  function onSend(text: string) {
-    sendMessage({ text });
+  function onSend(text: string, _scopes: unknown[], files: File[]) {
+    sendMessage({ text, files: filesToFileList(files) });
   }
 
   const isLoading = status === "submitted" || status === "streaming";

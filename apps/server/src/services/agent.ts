@@ -10,9 +10,15 @@ import {
 } from "ai";
 import { z } from "zod";
 import { resolveModel, type ProviderName } from "./providers/index.ts";
-import { queryRag, indexRag } from "./qmd.ts";
+import { indexRag } from "./qmd.ts";
+import { searchProfileContent } from "./profile.ts";
+import { runSubagents, SUBAGENT_IDS } from "./subagents.ts";
+import {
+  buildSubagentSynthesisPrompt,
+  parseSubagentCommand,
+  type ParsedSubagentCommand,
+} from "./subagentCommand.ts";
 import { join, basename } from "path";
-import { readdir } from "fs/promises";
 import { env } from "../config/env.js";
 import type { SelectedField, SelectedScope } from "@resumagent/shared";
 
@@ -85,6 +91,10 @@ const BASE_SYSTEM_PROMPT = [
   "Do not invent CSS selectors for agentBrowser. Prefer @refs from snapshot output (e.g. @e15). Use a CSS selector only when it was observed in the snapshot/page.",
   "If an agentBrowser selector action fails, inspect the returned diagnostics and retry with a visible @ref from snapshot instead of guessing another class name.",
   "Use the writeProfile tool ONLY when the user explicitly wants to save/remember information to their profile database (RAG files on disk). This is NOT for filling web page elements.",
+  "Use the runSubagents tool for complex resume/application tasks where independent parallel analysis helps: job posting analysis, profile-to-job matching, application answer drafting, cover letter planning, or comparing answer strategies.",
+  "runSubagents can delegate to jobAnalyzer, profileMatcher, and answerStrategist. Give each requested subagent a narrow task brief. Use its returned summaries to synthesize the final answer.",
+  "Do not use runSubagents for greetings, simple factual questions, direct browser manipulation, selected form fill tasks, saving profile data, or tasks where one normal searchProfile call is enough.",
+  "When the user attaches images, inspect them as part of the conversation context and use visible details from the images in your answer.",
   "",
   "CRITICAL — when a FILL TASK section appears in this prompt:",
   "  1. DO NOT ask clarifying questions. Infer content from field labels/placeholders/headings.",
@@ -140,29 +150,6 @@ function buildScopeContext(scopes: SelectedScope[]): string {
   return lines.join("\n");
 }
 
-async function searchProfileContent(query: string): Promise<string> {
-  const result = await queryRag(query);
-  if (result) return result;
-
-  try {
-    const files = await readdir(env.RAG_DIR);
-    const mdFiles = files.filter((f) => f.endsWith(".md"));
-    if (mdFiles.length === 0) return "저장된 프로필 정보가 없습니다.";
-
-    const contents = await Promise.all(
-      mdFiles.map(async (f) => {
-        const text = await Bun.file(join(env.RAG_DIR, f))
-          .text()
-          .catch(() => "");
-        return text ? `## ${f}\n${text}` : null;
-      })
-    );
-    return contents.filter(Boolean).join("\n\n---\n\n") || "저장된 프로필 정보가 없습니다.";
-  } catch {
-    return "RAG 폴더를 읽을 수 없습니다.";
-  }
-}
-
 function getMessageText(message: UIMessage): string {
   return (message.parts ?? [])
     .map((part) => {
@@ -175,6 +162,22 @@ function getMessageText(message: UIMessage): string {
 function getLastUserText(messages: UIMessage[]): string {
   const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
   return lastUserMessage ? getMessageText(lastUserMessage) : "";
+}
+
+export function getSubagentCommandFromMessages(messages: UIMessage[]): ParsedSubagentCommand | null {
+  return parseSubagentCommand(getLastUserText(messages));
+}
+
+function buildConversationSummary(messages: UIMessage[]): string {
+  return messages
+    .slice(-6)
+    .map((message) => {
+      const text = getMessageText(message).trim().replace(/\s+/g, " ");
+      if (!text) return "";
+      return `${message.role}: ${text.slice(0, 800)}`;
+    })
+    .filter(Boolean)
+    .join("\n");
 }
 
 function flattenSelectedFields(scopes: SelectedScope[]): SelectedField[] {
@@ -727,7 +730,52 @@ export async function createFieldFillResponse(
   return createUIMessageStreamResponse({ stream });
 }
 
-const tools = {
+export async function createSubagentCommandResponse(
+  messages: UIMessage[],
+  options: { provider?: ProviderName; modelId?: string; selectedScopes?: SelectedScope[] } = {},
+  command?: ParsedSubagentCommand
+): Promise<Response> {
+  const resolvedCommand = command ?? getSubagentCommandFromMessages(messages);
+  if (!resolvedCommand) throw new Error("/sub command not found");
+
+  const model = await resolveModel(options);
+  const subagentOutput = await runSubagents(
+    { agents: resolvedCommand.agents },
+    {
+      userText: resolvedCommand.task,
+      conversationSummary: buildConversationSummary(messages),
+      provider: options.provider,
+      modelId: options.modelId,
+    }
+  );
+
+  const result = streamText({
+    model,
+    system: [
+      BASE_SYSTEM_PROMPT,
+      "",
+      "SUBAGENT COMMAND MODE:",
+      "The user explicitly invoked /sub. Subagents have already run. Do not call runSubagents again; synthesize the final answer from the provided results.",
+    ].join("\n"),
+    prompt: buildSubagentSynthesisPrompt(resolvedCommand, subagentOutput),
+    maxRetries: 0,
+    onError: (event) => {
+      console.error("[agent] /sub synthesis error:", event.error);
+    },
+  });
+
+  return result.toUIMessageStreamResponse({
+    sendReasoning: true,
+    sendSources: false,
+    onError: (error) => (error instanceof Error ? error.message : "알 수 없는 오류"),
+  });
+}
+
+function createAgentTools(
+  messages: UIMessage[],
+  options: { provider?: ProviderName; modelId?: string; selectedScopes?: SelectedScope[] } = {}
+) {
+  return {
   searchProfile: tool({
     description:
       "사용자의 프로필/포트폴리오/경력/스킬 정보를 rag 폴더에서 검색합니다. 시맨틱 검색 후 결과가 없으면 전체 파일을 반환합니다.",
@@ -791,6 +839,32 @@ const tools = {
     },
   }),
 
+  runSubagents: tool({
+    description:
+      "복잡한 이력서/지원서 작업을 전문 subagent들에게 병렬로 위임합니다. jobAnalyzer는 채용공고/문항 요구사항을 분석하고, profileMatcher는 저장된 프로필 근거를 찾고, answerStrategist는 최종 답변 전략을 정리합니다. 간단한 질문, 브라우저 조작, 프로필 저장, 선택 필드 자동 채움에는 사용하지 마세요.",
+    inputSchema: z.object({
+      agents: z
+        .array(
+          z.object({
+            id: z.enum(SUBAGENT_IDS).describe("실행할 subagent ID"),
+            task: z.string().min(1).describe("해당 subagent가 수행할 좁고 구체적인 작업 설명"),
+          })
+        )
+        .min(1)
+        .max(3)
+        .describe("병렬 실행할 subagent 목록. 같은 id는 두 번 넣지 마세요."),
+    }),
+    execute: async (input) => {
+      console.log("[agent] runSubagents:", input.agents.map((agent) => agent.id).join(", "));
+      return runSubagents(input, {
+        userText: getLastUserText(messages),
+        conversationSummary: buildConversationSummary(messages),
+        provider: options.provider,
+        modelId: options.modelId,
+      });
+    },
+  }),
+
   // execute 없음 — 클라이언트가 수락/거절 UI를 표시하고 처리
   proposeFieldFill: tool({
     description:
@@ -815,7 +889,8 @@ const tools = {
       reason: z.string().optional().describe("이 값을 선택한 이유 (선택적)"),
     }),
   }),
-};
+  };
+}
 
 export async function streamAgentResponse(
   messages: UIMessage[],
@@ -835,7 +910,7 @@ export async function streamAgentResponse(
     model,
     system,
     messages: modelMessages,
-    tools,
+    tools: createAgentTools(messages, options),
     stopWhen: stepCountIs(stopWhenCount),
     maxRetries: 0,
     onError: (event) => {

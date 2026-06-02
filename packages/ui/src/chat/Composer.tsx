@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Mic, RefreshCw, X, Square } from "lucide-react";
+import { ArrowUp, ImagePlus, Mic, RefreshCw, X, Square } from "lucide-react";
 import { Button } from "../primitives/button";
 import { cn } from "../lib/utils";
 import { ModelPicker } from "./ModelPicker";
 import type { ProviderCatalogResponse, ProviderName, SelectedScope } from "@resumagent/shared";
+import {
+  getAcceptedImageFiles,
+  imageAttachmentId,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENTS,
+} from "./imageAttachments";
 
 interface Props {
-  onSend: (text: string, scopes: SelectedScope[]) => void;
+  onSend: (text: string, scopes: SelectedScope[], files: File[]) => void;
   onStop?: () => void;
   disabled: boolean;
   provider: string;
@@ -100,6 +106,39 @@ function microphonePermissionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "마이크 권한을 요청할 수 없습니다";
 }
 
+function ImageAttachmentPreview({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const [url, setUrl] = useState("");
+
+  useEffect(() => {
+    const nextUrl = URL.createObjectURL(file);
+    setUrl(nextUrl);
+    return () => URL.revokeObjectURL(nextUrl);
+  }, [file]);
+
+  return (
+    <div
+      className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-zinc-200 bg-white"
+      title={file.name}
+    >
+      {url && (
+        <img
+          src={url}
+          alt={file.name}
+          className="h-full w-full object-cover"
+        />
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        className="absolute right-1 top-1 rounded-full bg-black/60 p-0.5 text-white opacity-90 transition-opacity hover:bg-black"
+        aria-label="이미지 첨부 제거"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </div>
+  );
+}
+
 async function requestBrowserMicrophonePermission(): Promise<void> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("이 브라우저는 마이크 권한 요청을 지원하지 않습니다");
@@ -126,9 +165,12 @@ export function Composer({
   const [text, setText] = useState("");
   const [reindexing, setReindexing] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [requestingMicPermission, setRequestingMicPermission] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const voiceBaseTextRef = useRef("");
   const requestingMicPermissionRef = useRef(false);
@@ -161,10 +203,12 @@ export function Composer({
 
   function submit() {
     const trimmed = text.trim();
-    if (!trimmed || disabled || !model) return;
+    if ((!trimmed && imageFiles.length === 0) || disabled || !model) return;
     abortListening();
-    onSend(trimmed, scopes);
+    onSend(trimmed, scopes, imageFiles);
     setText("");
+    setImageFiles([]);
+    setAttachmentError(null);
     setVoiceError(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -179,6 +223,28 @@ export function Composer({
     } finally {
       setReindexing(false);
     }
+  }
+
+  function addImageFiles(files: Iterable<File>) {
+    const incoming = Array.from(files);
+    const accepted = getAcceptedImageFiles(incoming, { existingCount: imageFiles.length });
+    if (accepted.length > 0) {
+      setImageFiles((prev) => [...prev, ...accepted]);
+    }
+
+    const rejectedCount = incoming.length - accepted.length;
+    if (rejectedCount > 0) {
+      setAttachmentError(
+        `이미지는 최대 ${MAX_IMAGE_ATTACHMENTS}개, 파일당 ${Math.floor(MAX_IMAGE_ATTACHMENT_BYTES / 1024 / 1024)}MB까지 첨부할 수 있습니다`
+      );
+    } else {
+      setAttachmentError(null);
+    }
+  }
+
+  function removeImageFile(id: string) {
+    setImageFiles((prev) => prev.filter((file) => imageAttachmentId(file) !== id));
+    setAttachmentError(null);
   }
 
   function scopeLabel(scope: SelectedScope): string {
@@ -291,7 +357,16 @@ export function Composer({
 
   return (
     <div className="shrink-0 px-4 pb-6 pt-2">
-      <div className="rounded-2xl border border-zinc-200 bg-zinc-100 p-2 shadow-sm">
+      <div
+        className="rounded-2xl border border-zinc-200 bg-zinc-100 p-2 shadow-sm"
+        onDrop={(event) => {
+          event.preventDefault();
+          addImageFiles(event.dataTransfer.files);
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+        }}
+      >
         {scopes.length > 0 && (
           <div className="flex flex-wrap gap-1 px-2 pb-1 pt-1">
             {scopes.map((scope) => (
@@ -331,10 +406,33 @@ export function Composer({
               submit();
             }
           }}
+          onPaste={(event) => {
+            const files = event.clipboardData.files;
+            if (files.length > 0) addImageFiles(files);
+          }}
         />
+        {imageFiles.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto px-2 pb-2">
+            {imageFiles.map((file) => {
+              const id = imageAttachmentId(file);
+              return (
+                <ImageAttachmentPreview
+                  key={id}
+                  file={file}
+                  onRemove={() => removeImageFile(id)}
+                />
+              );
+            })}
+          </div>
+        )}
         {voiceError && (
           <div className="px-2 pb-1 text-xs text-red-600">
             {voiceError}
+          </div>
+        )}
+        {attachmentError && (
+          <div className="px-2 pb-1 text-xs text-amber-600">
+            {attachmentError}
           </div>
         )}
         <div className="flex items-center gap-1 px-1">
@@ -356,6 +454,27 @@ export function Composer({
             fetchCatalog={fetchCatalog}
           />
           <span className="flex-1" />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              if (event.currentTarget.files) addImageFiles(event.currentTarget.files);
+              event.currentTarget.value = "";
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled || imageFiles.length >= MAX_IMAGE_ATTACHMENTS}
+            aria-label="이미지 첨부"
+            title="이미지 첨부"
+            className="rounded-full p-2 text-zinc-500 transition-colors hover:bg-zinc-200 hover:text-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <ImagePlus className="h-4 w-4" />
+          </button>
           <button
             type="button"
             onClick={toggleVoiceInput}
@@ -389,7 +508,7 @@ export function Composer({
               type="button"
               size="icon"
               onClick={submit}
-              disabled={!text.trim() || disabled || !model}
+              disabled={(!text.trim() && imageFiles.length === 0) || disabled || !model}
               className="h-8 w-8 rounded-full bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-40"
             >
               <ArrowUp className="h-4 w-4" />
